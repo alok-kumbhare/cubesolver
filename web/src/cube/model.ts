@@ -64,16 +64,31 @@ export function validate(faces: Faces): ValidationResult {
   const counts: Record<string, number> = {};
   for (const f of FACE_ORDER) for (const c of faces[f]) counts[c] = (counts[c] ?? 0) + 1;
 
+  const NAMES: Record<Face, string> = {
+    U: 'White', D: 'Yellow', F: 'Green', B: 'Blue', L: 'Orange', R: 'Red',
+  };
+
   for (const f of FACE_ORDER) {
-    if ((counts[f] ?? 0) !== 9) {
-      return { valid: false, error: `Need exactly 9 ${f} stickers (have ${counts[f] ?? 0})` };
+    const have = counts[f] ?? 0;
+    if (have !== 9) {
+      const diff = have - 9;
+      const detail = diff > 0
+        ? `${diff} too many`
+        : `${-diff} missing`;
+      return {
+        valid: false,
+        error: `${NAMES[f]}: ${have}/9 stickers (${detail})`,
+      };
     }
   }
 
   // Centers must be the canonical face color (we lock them, but double-check).
   for (const f of FACE_ORDER) {
     if (faces[f][4] !== f) {
-      return { valid: false, error: `Center of face ${f} must be ${f}` };
+      return {
+        valid: false,
+        error: `Center of the ${NAMES[f]} face must stay ${NAMES[f]}`,
+      };
     }
   }
 

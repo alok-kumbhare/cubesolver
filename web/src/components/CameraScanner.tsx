@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Faces, Face } from '../cube/model';
-import { setSticker } from '../cube/model';
+import { setSticker, validate } from '../cube/model';
 import { FACE_COLORS, COLOR_NAMES, KID_FACE_GUIDE_ORDER, FACE_TOP_NEIGHBOR } from '../cube/theme';
 import { IsoCubeIcon } from './IsoCubeIcon';
 import { ColorPalette } from './ColorPalette';
@@ -119,7 +119,7 @@ function detectCubeBBox(
       }
     }
   }
-  if (total < SW * SH * 0.04) return null;
+  if (total < SW * SH * 0.02) return null;
 
   let colMax = 0; for (let i = 0; i < SW; i++) if (colCount[i] > colMax) colMax = colCount[i];
   let rowMax = 0; for (let i = 0; i < SH; i++) if (rowCount[i] > rowMax) rowMax = rowCount[i];
@@ -140,7 +140,7 @@ function detectCubeBBox(
   // 5% margin so the outermost stickers aren't clipped by a tight bbox.
   let side = Math.max(bw, bh) * 1.05;
   side = Math.min(side, w, h);
-  if (side < Math.min(w, h) * 0.2) return null;
+  if (side < Math.min(w, h) * 0.10) return null;
   const fx = Math.round(Math.max(0, Math.min(w - side, cx - side / 2)));
   const fy = Math.round(Math.max(0, Math.min(h - side, cy - side / 2)));
   return { x: fx, y: fy, side: Math.round(side) };
@@ -259,7 +259,7 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [faceIdx, setFaceIdx] = useState(0);
   const [lastDetected, setLastDetected] = useState<Face[] | null>(null);
-  const [livePreview, setLivePreview] = useState<Face[] | null>(null);
+  const [, setLivePreview] = useState<Face[] | null>(null);
   const [autoCapture, setAutoCapture] = useState(true);
   const [, setStability] = useState(0);
   const [justCaptured, setJustCaptured] = useState(false);
@@ -273,10 +273,16 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
   // Live bbox (canvas coords + dims) returned by the latest sampled frame.
   // Drives the dynamic grid overlay during scanning so it tracks the cube
   // around the frame instead of forcing the user to align with a fixed box.
-  const [liveBBox, setLiveBBox] = useState<{ x: number; y: number; side: number; w: number; h: number } | null>(null);
+  const [, setLiveBBox] = useState<{ x: number; y: number; side: number; w: number; h: number } | null>(null);
   // Bbox at capture time, used to position the snapshot + captured-cells
   // overlay so they freeze in place.
   const [capturedBBox, setCapturedBBox] = useState<{ x: number; y: number; side: number; w: number; h: number } | null>(null);
+  // Intrinsic video dimensions, set once metadata loads. Used to size the
+  // stage to the camera's actual aspect ratio so the on-screen overlay
+  // coordinates map 1:1 to canvas pixel coordinates without object-fit
+  // cropping (which would distort the grid into a non-square rectangle
+  // when the phone delivers a portrait stream).
+  const [videoDims, setVideoDims] = useState<{ w: number; h: number }>({ w: 4, h: 3 });
   // Currently-selected sticker color for inline editing of the captured face.
   const [paintColor, setPaintColor] = useState<Face>('U');
   // Frozen snapshot data URL set on capture so we display the exact image
@@ -324,6 +330,14 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
+          // Capture the camera's intrinsic dimensions so the stage can size
+          // itself to match (and percent-based overlays line up correctly).
+          if (videoRef.current.videoWidth && videoRef.current.videoHeight) {
+            setVideoDims({
+              w: videoRef.current.videoWidth,
+              h: videoRef.current.videoHeight,
+            });
+          }
           setReady(true);
         }
       } catch (e) {
@@ -542,7 +556,10 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
         </div>
       )}
 
-      <div className="camera-scanner__stage">
+      <div
+        className="camera-scanner__stage"
+        style={{ aspectRatio: `${videoDims.w} / ${videoDims.h}` }}
+      >
         <video
           ref={videoRef}
           playsInline
@@ -551,9 +568,7 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           style={{ visibility: snapshot ? 'hidden' : 'visible', transform: mirror ? 'scaleX(-1)' : 'none' }}
         />
         {snapshot && capturedBBox && (() => {
-          const left = mirror
-            ? (1 - (capturedBBox.x + capturedBBox.side) / capturedBBox.w) * 100
-            : (capturedBBox.x / capturedBBox.w) * 100;
+          const left = (capturedBBox.x / capturedBBox.w) * 100;
           const top = (capturedBBox.y / capturedBBox.h) * 100;
           const wPct = (capturedBBox.side / capturedBBox.w) * 100;
           const hPct = (capturedBBox.side / capturedBBox.h) * 100;
@@ -572,33 +587,24 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
             />
           );
         })()}
-        {(() => {
-          // Position the 3x3 cell overlay over the detected (or captured)
-          // cube bounding box. Falls back to the legacy centered grid when
-          // detection fails so the user still sees an alignment hint.
-          const activeBBox = capturedBBox ?? liveBBox;
-          let left: string, top: string, wPct: string, hPct: string;
-          if (activeBBox) {
-            const lp = mirror
-              ? (1 - (activeBBox.x + activeBBox.side) / activeBBox.w) * 100
-              : (activeBBox.x / activeBBox.w) * 100;
-            left = lp + '%';
-            top = (activeBBox.y / activeBBox.h) * 100 + '%';
-            wPct = (activeBBox.side / activeBBox.w) * 100 + '%';
-            hPct = (activeBBox.side / activeBBox.h) * 100 + '%';
-          } else {
-            // Fallback fixed centered 50% box.
-            left = '25%'; top = '25%'; wPct = '50%'; hPct = '50%';
-          }
-          // Mirror the cell DOM order horizontally so DOM cell 0 (top-left
-          // in the unmirrored frame, i.e. data[0]) appears at the visually
-          // top-left of the mirrored image.
-          const transform = (snapshot || !mirror) ? 'none' : 'scaleX(-1)';
+        {/* Cell overlay only after capture — for visually confirming and
+         * tap-editing the detected stickers. During live scanning we show
+         * just the camera feed; the auto-capture fires once the cube is
+         * detected and stable, so no on-screen alignment grid is needed. */}
+        {capturedBBox && (() => {
+          const lp = (capturedBBox.x / capturedBBox.w) * 100;
+          const left = lp + '%';
+          const top = (capturedBBox.y / capturedBBox.h) * 100 + '%';
+          const wPct = (capturedBBox.side / capturedBBox.w) * 100 + '%';
+          const hPct = (capturedBBox.side / capturedBBox.h) * 100 + '%';
+          // Snapshot is shown unmirrored so the user can compare to the
+          // physical cube they're holding. The cell grid (DOM cell i = data[i]
+          // = canvas position i) therefore matches without any flip.
+          const transform = 'none';
           return (
             <div
               className={
                 'camera-scanner__grid' +
-                (aligned ? ' camera-scanner__grid--aligned' : '') +
                 (lastDetected ? ' camera-scanner__grid--editable' : '')
               }
               style={{
@@ -608,23 +614,13 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
             >
               {Array.from({ length: 9 }).map((_, i) => {
             const captured = lastDetected?.[i];
-            const live = livePreview?.[i];
-            const shown = captured ?? live;
             const isCenter = i === 4;
-            const centerHint = isCenter && !captured;
             const editable = !!captured && !isCenter;
-            const bg = captured
-              ? FACE_COLORS[captured]
-              : centerHint
-                ? FACE_COLORS[currentFace]
-                : shown
-                  ? FACE_COLORS[shown]
-                  : 'transparent';
-            const op = captured ? 0.7 : centerHint ? 0.45 : live ? 0.3 : 1;
+            const bg = captured ? FACE_COLORS[captured] : 'transparent';
+            const op = captured ? 0.75 : 1;
             const className =
               'camera-scanner__cell' +
               (captured ? ' camera-scanner__cell--captured' : '') +
-              (centerHint ? ' camera-scanner__cell--center-hint' : '') +
               (editable ? ' camera-scanner__cell--editable' : '');
             if (editable) {
               return (
@@ -681,16 +677,21 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
             disabled={!ready}
           >📸 Capture {COLOR_NAMES[currentFace]} face</button>
         )}
-        {isLast ? (
-          <button
-            type="button"
-            className="primary"
-            onClick={onClose}
-            disabled={!justCaptured && !lastDetected}
-          >
-            ✅ Done
-          </button>
-        ) : (
+        {isLast ? (() => {
+          const v = validate(facesRef.current);
+          const canDone = (justCaptured || lastDetected) && v.valid;
+          return (
+            <button
+              type="button"
+              className="primary"
+              onClick={onClose}
+              disabled={!canDone}
+              title={v.valid ? 'Solve the cube' : v.error}
+            >
+              ✅ Done — Solve it!
+            </button>
+          );
+        })() : (
           <button
             type="button"
             className={justCaptured ? 'primary' : ''}
@@ -701,6 +702,24 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           </button>
         )}
       </div>
+
+      {/* On the last face, show inline validation so the user can fix any
+          miscounts (tap a sticker → repaint with the palette) BEFORE Done. */}
+      {isLast && (justCaptured || lastDetected) && (() => {
+        const v = validate(facesRef.current);
+        if (v.valid) {
+          return (
+            <div className="camera-scanner__status camera-scanner__status--ok">
+              ✓ All 54 stickers look good! Tap <b>Done</b> to solve.
+            </div>
+          );
+        }
+        return (
+          <div className="camera-scanner__mismatch">
+            ⚠ {v.error}. Tap any wrong sticker on the preview to fix it.
+          </div>
+        );
+      })()}
 
       {/* When a face has been captured, show a small palette so the user
           can tap any sticker on the preview above to recolor it. The center

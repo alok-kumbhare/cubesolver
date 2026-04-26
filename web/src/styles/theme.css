@@ -323,6 +323,9 @@ button { font-family: inherit; }
 .camera-scanner__stage {
   position: relative;
   width: 100%;
+  /* aspect-ratio is set inline based on the camera's intrinsic dimensions,
+   * so the stage matches the video and overlays in percent coordinates
+   * line up exactly with cube pixel positions. */
   aspect-ratio: 4 / 3;
   background: var(--crust);
   border-radius: 8px;
@@ -330,7 +333,7 @@ button { font-family: inherit; }
 }
 .camera-scanner__video {
   position: absolute; inset: 0;
-  width: 100%; height: 100%; object-fit: cover;
+  width: 100%; height: 100%; object-fit: contain;
 }
 .camera-scanner__grid {
   position: absolute;

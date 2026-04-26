@@ -217,6 +217,10 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
   const [centerMismatch, setCenterMismatch] = useState<Face | null>(null);
   const [alignmentMsg, setAlignmentMsg] = useState<string | null>(null);
   const [aligned, setAligned] = useState(false);
+  // True when the camera is the user-facing one (or unknown — desktop
+  // webcams default to selfie-style mirroring). False for the rear/back
+  // camera on phones, where the natural view should not be flipped.
+  const [mirror, setMirror] = useState(true);
   // Currently-selected sticker color for inline editing of the captured face.
   const [paintColor, setPaintColor] = useState<Face>('U');
   // Frozen snapshot data URL set on capture so we display the exact image
@@ -253,6 +257,13 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
+        // Detect whether we actually got the back camera. On phones,
+        // 'environment' means rear-facing (don't mirror); on desktops
+        // there's usually only the user-facing webcam, in which case
+        // we keep the selfie-style mirror.
+        const settings = stream.getVideoTracks()[0]?.getSettings?.();
+        const facing = settings && (settings as MediaTrackSettings & { facingMode?: string }).facingMode;
+        setMirror(facing !== 'environment');
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -469,7 +480,7 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           playsInline
           muted
           className="camera-scanner__video"
-          style={{ visibility: snapshot ? 'hidden' : 'visible', transform: 'scaleX(-1)' }}
+          style={{ visibility: snapshot ? 'hidden' : 'visible', transform: mirror ? 'scaleX(-1)' : 'none' }}
         />
         {snapshot && (
           <img
@@ -485,16 +496,12 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
             (lastDetected ? ' camera-scanner__grid--editable' : '')
           }
           // Match the visual orientation of the media behind the grid: the
-          // live <video> is CSS-mirrored (selfie), so the grid mirrors with
-          // it; the snapshot is un-mirrored (real view), so the grid is
-          // un-mirrored too. Cell DOM order stays the same, so data[0] is
-          // always the canonical top-left sticker.
+          // live <video> is CSS-mirrored only when `mirror` is true (selfie
+          // / desktop webcam); the snapshot is always un-mirrored (it's the
+          // raw captured frame). Cell DOM order stays the same, so data[0]
+          // is always the canonical top-left sticker.
           style={{
-            // Preserve the CSS centering transform and only flip horizontally
-            // when the live video is shown (selfie view). When the snapshot
-            // is up, drop the flip so the grid matches the un-mirrored
-            // captured image.
-            transform: snapshot
+            transform: snapshot || !mirror
               ? 'translate(-50%, -50%)'
               : 'translate(-50%, -50%) scaleX(-1)',
           }}

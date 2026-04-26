@@ -84,13 +84,76 @@ function sampleValue(ctx: CanvasRenderingContext2D, cx: number, cy: number, half
   return total / n / 255;
 }
 
+interface BBox { x: number; y: number; side: number }
+
+// Find a rough bounding box of the cube in the frame by projecting a
+// "saturated cube-color pixel" mask onto the X and Y axes and picking the
+// row/column ranges where the projection is significant. Returns the
+// largest square that fits the projected extent, recentered on the cube's
+// centroid. Returns null if too few cube-like pixels are detected.
+//
+// Cheap (~one classify() per ~16 px on a downsampled grid) and works
+// well as long as the cube is the most colorful thing in the frame.
+function detectCubeBBox(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+): BBox | null {
+  const TARGET = 160;
+  const stride = Math.max(1, Math.floor(w / TARGET));
+  const SW = Math.floor(w / stride);
+  const SH = Math.floor(h / stride);
+  const data = ctx.getImageData(0, 0, w, h).data;
+
+  const colCount = new Int32Array(SW);
+  const rowCount = new Int32Array(SH);
+  let total = 0;
+  for (let yy = 0; yy < SH; yy++) {
+    const py = yy * stride;
+    for (let xx = 0; xx < SW; xx++) {
+      const px = xx * stride;
+      const i = (py * w + px) * 4;
+      const cls = classify(data[i], data[i + 1], data[i + 2]);
+      if (cls.confident) {
+        colCount[xx]++;
+        rowCount[yy]++;
+        total++;
+      }
+    }
+  }
+  if (total < SW * SH * 0.04) return null;
+
+  let colMax = 0; for (let i = 0; i < SW; i++) if (colCount[i] > colMax) colMax = colCount[i];
+  let rowMax = 0; for (let i = 0; i < SH; i++) if (rowCount[i] > rowMax) rowMax = rowCount[i];
+  const colThr = Math.max(2, colMax * 0.3);
+  const rowThr = Math.max(2, rowMax * 0.3);
+
+  let xmin = -1, xmax = -1, ymin = -1, ymax = -1;
+  for (let i = 0; i < SW; i++) if (colCount[i] >= colThr) { if (xmin < 0) xmin = i; xmax = i; }
+  for (let i = 0; i < SH; i++) if (rowCount[i] >= rowThr) { if (ymin < 0) ymin = i; ymax = i; }
+  if (xmin < 0 || ymin < 0) return null;
+
+  const bx = xmin * stride;
+  const by = ymin * stride;
+  const bw = (xmax - xmin + 1) * stride;
+  const bh = (ymax - ymin + 1) * stride;
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+  // 5% margin so the outermost stickers aren't clipped by a tight bbox.
+  let side = Math.max(bw, bh) * 1.05;
+  side = Math.min(side, w, h);
+  if (side < Math.min(w, h) * 0.2) return null;
+  const fx = Math.round(Math.max(0, Math.min(w - side, cx - side / 2)));
+  const fy = Math.round(Math.max(0, Math.min(h - side, cy - side / 2)));
+  return { x: fx, y: fy, side: Math.round(side) };
+}
+
 interface FrameSample {
   cells: Face[];               // 9 classified colors, row-major
   allConfident: boolean;       // every cell hit the HSV thresholds (no nearest-RGB fallback)
-  centerAligned: boolean;      // 5 sub-points within the center cell agree → cube center is on a sticker, not on a gap
   centerFace: Face;            // detected center color (independent of expected)
-  cubePresent: boolean;        // dark sticker gaps detected → not pointed at a flat wall
+  cubePresent: boolean;        // bbox detected + dark sticker gaps detected → real cube
   snapshotDataUrl: string;     // PNG data URL of the cropped ROI for "freeze the frame" UX
+  bbox: BBox;                  // location of the sampled ROI in canvas coords
+  detected: boolean;           // true if bbox came from detection (not the fallback fixed grid)
 }
 
 function sampleFace(video: HTMLVideoElement): FrameSample {
@@ -101,18 +164,25 @@ function sampleFace(video: HTMLVideoElement): FrameSample {
   // Sample from the un-mirrored camera frame. The canonical face layout
   // (Kociemba's "looking at the face from outside") matches the camera's
   // native point of view, so data[0] is the real top-left sticker. The
-  // displayed <video> is CSS-mirrored for selfie-style alignment, and the
-  // grid overlay is mirrored along with it, so the on-screen feedback
-  // still lines up with what the user sees.
+  // displayed <video> may be CSS-mirrored (selfie-style) and the grid
+  // overlay is mirrored along with it, so the on-screen feedback still
+  // lines up with what the user sees.
   ctx.drawImage(video, 0, 0);
 
-  // Centered square ROI matching the on-screen grid. Smaller ROI = the cube
-  // can be further from the camera and still fit.
-  const side = Math.min(canvas.width, canvas.height) * 0.5;
-  const ox = (canvas.width - side) / 2;
-  const oy = (canvas.height - side) / 2;
+  // Try to detect the cube's bounding box automatically. If detection
+  // fails, fall back to a fixed centered ROI (legacy behaviour) so the
+  // user can still align manually with the on-screen grid.
+  const detectedBBox = detectCubeBBox(ctx, canvas.width, canvas.height);
+  const fallbackSide = Math.min(canvas.width, canvas.height) * 0.5;
+  const bbox: BBox = detectedBBox ?? {
+    x: Math.round((canvas.width - fallbackSide) / 2),
+    y: Math.round((canvas.height - fallbackSide) / 2),
+    side: Math.round(fallbackSide),
+  };
+  const detected = !!detectedBBox;
+  const { x: ox, y: oy, side } = bbox;
   const cell = side / 3;
-  const sampleHalf = 6; // 12x12 sample, well inside any sticker
+  const sampleHalf = Math.max(4, Math.floor(cell * 0.18));
 
   const cells: Face[] = [];
   let confidentCount = 0;
@@ -126,67 +196,46 @@ function sampleFace(video: HTMLVideoElement): FrameSample {
     }
   }
   // Tolerate up to 2 unconfident cells (lighting glare on a single sticker
-  // shouldn't block the whole capture). Center-alignment check below is
-  // strict enough to keep us honest.
+  // shouldn't block the whole capture).
   const allConfident = confidentCount >= 7;
 
-  // Center-alignment check: take 5 sub-samples within the center cell. The
-  // center sub-sample MUST be confident; among the 4 neighbors at ~25% cell
-  // offset, at least 3 of 4 must agree with it. This tolerates one neighbor
-  // landing near a sticker gap or shadow.
-  const ccx = ox + cell * 1.5;
-  const ccy = oy + cell * 1.5;
-  const off = cell * 0.25;
-  const center = sampleAt(ctx, ccx, ccy, sampleHalf);
-  const neighbors = [
-    sampleAt(ctx, ccx + off, ccy, sampleHalf),
-    sampleAt(ctx, ccx - off, ccy, sampleHalf),
-    sampleAt(ctx, ccx, ccy + off, sampleHalf),
-    sampleAt(ctx, ccx, ccy - off, sampleHalf),
-  ];
-  const centerFace = center.face;
-  const agree = neighbors.filter((n) => n.face === centerFace).length;
-  const centerAligned = center.confident && agree >= 3;
+  const centerFace = cells[4];
 
   // ---- Cube-presence check ---------------------------------------------
   // A real Rubik's cube has dark plastic gaps between stickers. Sample the
-  // 12 gap midpoints between adjacent cells (3 rows × 2 horiz + 3 cols × 2
-  // vert) and compare each gap's brightness to the average brightness of
-  // its two flanking sticker centers. If the gap is meaningfully darker,
-  // it's a real sticker boundary; if not, we're probably looking at a
-  // uniform surface (wall, table, etc.).
+  // 12 gap midpoints between adjacent cells and compare each gap's
+  // brightness to its two flanking sticker centers. Detection alone isn't
+  // enough — a colorful poster could yield a plausible bbox.
   const cellValues: number[][] = [];
+  const gapHalf = Math.max(2, Math.floor(cell * 0.08));
   for (let r = 0; r < 3; r++) {
     cellValues[r] = [];
     for (let c = 0; c < 3; c++) {
       cellValues[r][c] = sampleValue(ctx, ox + cell * (c + 0.5), oy + cell * (r + 0.5), sampleHalf);
     }
   }
-  const GAP_DARKNESS_MIN = 0.12;     // gap must be at least 12% darker
-  const GAP_HALF = 3;                // 6x6 sample at each gap
+  const GAP_DARKNESS_MIN = 0.12;
   let darkGaps = 0;
-  // horizontal gaps (between cells in same row)
   for (let r = 0; r < 3; r++) {
     for (let c = 0; c < 2; c++) {
       const gx = ox + cell * (c + 1);
       const gy = oy + cell * (r + 0.5);
-      const gV = sampleValue(ctx, gx, gy, GAP_HALF);
+      const gV = sampleValue(ctx, gx, gy, gapHalf);
       const flank = (cellValues[r][c] + cellValues[r][c + 1]) / 2;
       if (flank - gV >= GAP_DARKNESS_MIN) darkGaps++;
     }
   }
-  // vertical gaps
   for (let c = 0; c < 3; c++) {
     for (let r = 0; r < 2; r++) {
       const gx = ox + cell * (c + 0.5);
       const gy = oy + cell * (r + 1);
-      const gV = sampleValue(ctx, gx, gy, GAP_HALF);
+      const gV = sampleValue(ctx, gx, gy, gapHalf);
       const flank = (cellValues[r][c] + cellValues[r + 1][c]) / 2;
       if (flank - gV >= GAP_DARKNESS_MIN) darkGaps++;
     }
   }
-  // 12 gaps total; require at least 7 to look like real sticker boundaries.
-  const cubePresent = darkGaps >= 7;
+  // Need both detection AND enough dark gaps for a confident "cube present".
+  const cubePresent = detected && darkGaps >= 7;
 
   // Snapshot the ROI so we can freeze-frame on capture.
   const snapCanvas = document.createElement('canvas');
@@ -195,7 +244,7 @@ function sampleFace(video: HTMLVideoElement): FrameSample {
   snapCanvas.getContext('2d')!.drawImage(canvas, ox, oy, side, side, 0, 0, side, side);
   const snapshotDataUrl = snapCanvas.toDataURL('image/png');
 
-  return { cells, allConfident, centerAligned, centerFace, cubePresent, snapshotDataUrl };
+  return { cells, allConfident, centerFace, cubePresent, snapshotDataUrl, bbox, detected };
 }
 
 interface Props {
@@ -221,6 +270,13 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
   // webcams default to selfie-style mirroring). False for the rear/back
   // camera on phones, where the natural view should not be flipped.
   const [mirror, setMirror] = useState(true);
+  // Live bbox (canvas coords + dims) returned by the latest sampled frame.
+  // Drives the dynamic grid overlay during scanning so it tracks the cube
+  // around the frame instead of forcing the user to align with a fixed box.
+  const [liveBBox, setLiveBBox] = useState<{ x: number; y: number; side: number; w: number; h: number } | null>(null);
+  // Bbox at capture time, used to position the snapshot + captured-cells
+  // overlay so they freeze in place.
+  const [capturedBBox, setCapturedBBox] = useState<{ x: number; y: number; side: number; w: number; h: number } | null>(null);
   // Currently-selected sticker color for inline editing of the captured face.
   const [paintColor, setPaintColor] = useState<Face>('U');
   // Frozen snapshot data URL set on capture so we display the exact image
@@ -292,6 +348,11 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
     setCenterMismatch(null);
     setLastDetected(sample.cells);
     setSnapshot(sample.snapshotDataUrl);
+    setCapturedBBox({
+      x: sample.bbox.x, y: sample.bbox.y, side: sample.bbox.side,
+      w: videoRef.current?.videoWidth || 640,
+      h: videoRef.current?.videoHeight || 480,
+    });
     let next = facesRef.current;
     for (let i = 0; i < 9; i++) {
       next = setSticker(next, expected, i, sample.cells[i]);
@@ -326,30 +387,34 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
       const sample = sampleFace(video);
       // Always show live preview.
       setLivePreview(sample.cells.slice() as Face[]);
+      // Track the cube live so the overlay grid follows it. When detection
+      // fails we clear the bbox; the UI falls back to the fixed centered
+      // grid, prompting the user to bring the cube into view.
+      if (sample.detected) {
+        setLiveBBox({
+          x: sample.bbox.x, y: sample.bbox.y, side: sample.bbox.side,
+          w: video.videoWidth, h: video.videoHeight,
+        });
+      } else {
+        setLiveBBox(null);
+      }
 
       if (!autoCapture) return;
       const expected = KID_FACE_GUIDE_ORDER[faceIdxRef.current];
 
       // ---- Alignment gate ---------------------------------------------------
-      // Auto-capture only when the WHOLE cube fits the frame and the center
-      // sticker is properly aligned with the grid center. Each gate explains
-      // *why* it failed so the prompt can guide the user.
+      // Auto-capture only when we've locked onto a real cube and the colors
+      // read confidently. Detection replaces the old "line up with the box"
+      // requirement — the kid just needs the cube somewhere in frame.
       if (!sample.cubePresent) {
-        setAlignmentMsg('Show your cube to the camera (no cube detected).');
+        setAlignmentMsg('Show your cube to the camera.');
         setAligned(false);
         lastFrameRef.current = null;
         setStability(0);
         return;
       }
       if (!sample.allConfident) {
-        setAlignmentMsg('Show all 9 stickers inside the square.');
-        setAligned(false);
-        lastFrameRef.current = null;
-        setStability(0);
-        return;
-      }
-      if (!sample.centerAligned) {
-        setAlignmentMsg('Line up the middle sticker with the center square.');
+        setAlignmentMsg('Hold the cube steady — colors are unclear.');
         setAligned(false);
         lastFrameRef.current = null;
         setStability(0);
@@ -397,6 +462,7 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
     setAlignmentMsg(null);
     setAligned(false);
     setSnapshot(null);
+    setCapturedBBox(null);
     lastFrameRef.current = null;
     setFaceIdx((i) => Math.min(KID_FACE_GUIDE_ORDER.length - 1, i + 1));
   }
@@ -409,6 +475,7 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
     setAlignmentMsg(null);
     setAligned(false);
     setSnapshot(null);
+    setCapturedBBox(null);
     lastFrameRef.current = null;
     setFaceIdx((i) => Math.max(0, i - 1));
   }
@@ -420,6 +487,7 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
     setAlignmentMsg(null);
     setAligned(false);
     setSnapshot(null);
+    setCapturedBBox(null);
     lastFrameRef.current = null;
   }
 
@@ -482,31 +550,63 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           className="camera-scanner__video"
           style={{ visibility: snapshot ? 'hidden' : 'visible', transform: mirror ? 'scaleX(-1)' : 'none' }}
         />
-        {snapshot && (
-          <img
-            src={snapshot}
-            alt="Captured face snapshot"
-            className="camera-scanner__snapshot"
-          />
-        )}
-        <div
-          className={
-            'camera-scanner__grid' +
-            (aligned ? ' camera-scanner__grid--aligned' : '') +
-            (lastDetected ? ' camera-scanner__grid--editable' : '')
+        {snapshot && capturedBBox && (() => {
+          const left = mirror
+            ? (1 - (capturedBBox.x + capturedBBox.side) / capturedBBox.w) * 100
+            : (capturedBBox.x / capturedBBox.w) * 100;
+          const top = (capturedBBox.y / capturedBBox.h) * 100;
+          const wPct = (capturedBBox.side / capturedBBox.w) * 100;
+          const hPct = (capturedBBox.side / capturedBBox.h) * 100;
+          return (
+            <img
+              src={snapshot}
+              alt="Captured face snapshot"
+              className="camera-scanner__snapshot"
+              style={{
+                left: left + '%',
+                top: top + '%',
+                width: wPct + '%',
+                height: hPct + '%',
+                transform: 'none',
+              }}
+            />
+          );
+        })()}
+        {(() => {
+          // Position the 3x3 cell overlay over the detected (or captured)
+          // cube bounding box. Falls back to the legacy centered grid when
+          // detection fails so the user still sees an alignment hint.
+          const activeBBox = capturedBBox ?? liveBBox;
+          let left: string, top: string, wPct: string, hPct: string;
+          if (activeBBox) {
+            const lp = mirror
+              ? (1 - (activeBBox.x + activeBBox.side) / activeBBox.w) * 100
+              : (activeBBox.x / activeBBox.w) * 100;
+            left = lp + '%';
+            top = (activeBBox.y / activeBBox.h) * 100 + '%';
+            wPct = (activeBBox.side / activeBBox.w) * 100 + '%';
+            hPct = (activeBBox.side / activeBBox.h) * 100 + '%';
+          } else {
+            // Fallback fixed centered 50% box.
+            left = '25%'; top = '25%'; wPct = '50%'; hPct = '50%';
           }
-          // Match the visual orientation of the media behind the grid: the
-          // live <video> is CSS-mirrored only when `mirror` is true (selfie
-          // / desktop webcam); the snapshot is always un-mirrored (it's the
-          // raw captured frame). Cell DOM order stays the same, so data[0]
-          // is always the canonical top-left sticker.
-          style={{
-            transform: snapshot || !mirror
-              ? 'translate(-50%, -50%)'
-              : 'translate(-50%, -50%) scaleX(-1)',
-          }}
-        >
-          {Array.from({ length: 9 }).map((_, i) => {
+          // Mirror the cell DOM order horizontally so DOM cell 0 (top-left
+          // in the unmirrored frame, i.e. data[0]) appears at the visually
+          // top-left of the mirrored image.
+          const transform = (snapshot || !mirror) ? 'none' : 'scaleX(-1)';
+          return (
+            <div
+              className={
+                'camera-scanner__grid' +
+                (aligned ? ' camera-scanner__grid--aligned' : '') +
+                (lastDetected ? ' camera-scanner__grid--editable' : '')
+              }
+              style={{
+                left, top, width: wPct, height: hPct,
+                transform,
+              }}
+            >
+              {Array.from({ length: 9 }).map((_, i) => {
             const captured = lastDetected?.[i];
             const live = livePreview?.[i];
             const shown = captured ?? live;
@@ -552,7 +652,9 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
               />
             );
           })}
-        </div>
+            </div>
+          );
+        })()}
       </div>
 
       <div className="camera-scanner__controls">

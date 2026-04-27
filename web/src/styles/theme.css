@@ -604,6 +604,13 @@ button.ghost {
     overflow-y: auto;
     gap: 8px;
   }
+  .camera-scanner__stage {
+    /* Keep the camera preview from pushing the controls off screen on
+     * tall portrait video streams. */
+    max-height: 55vh;
+    width: auto;
+    margin: 0 auto;
+  }
   .camera-scanner__header h2 { font-size: 16px; }
   .camera-scanner__prompt { font-size: 14px; }
   .camera-scanner__controls button { min-height: 48px; font-size: 15px; }

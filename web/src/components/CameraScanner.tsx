@@ -283,6 +283,21 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
   // cropping (which would distort the grid into a non-square rectangle
   // when the phone delivers a portrait stream).
   const [videoDims, setVideoDims] = useState<{ w: number; h: number }>({ w: 4, h: 3 });
+  // Measured stage dimensions in CSS pixels. Used to compute the actual
+  // displayed (object-fit: contain) video rect, so we can position overlays
+  // in absolute pixels regardless of the stage's rendered aspect ratio.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [stageDims, setStageDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0].contentRect;
+      setStageDims({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   // Currently-selected sticker color for inline editing of the captured face.
   const [paintColor, setPaintColor] = useState<Face>('U');
   // Frozen snapshot data URL set on capture so we display the exact image
@@ -557,6 +572,7 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
       )}
 
       <div
+        ref={stageRef}
         className="camera-scanner__stage"
         style={{ aspectRatio: `${videoDims.w} / ${videoDims.h}` }}
       >
@@ -567,53 +583,58 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           className="camera-scanner__video"
           style={{ visibility: snapshot ? 'hidden' : 'visible', transform: mirror ? 'scaleX(-1)' : 'none' }}
         />
-        {snapshot && capturedBBox && (() => {
-          const left = (capturedBBox.x / capturedBBox.w) * 100;
-          const top = (capturedBBox.y / capturedBBox.h) * 100;
-          const wPct = (capturedBBox.side / capturedBBox.w) * 100;
-          return (
-            <img
-              src={snapshot}
-              alt="Captured face snapshot"
-              className="camera-scanner__snapshot"
-              style={{
-                left: left + '%',
-                top: top + '%',
-                width: wPct + '%',
-                aspectRatio: '1 / 1',
-                height: 'auto',
-                transform: 'none',
-              }}
-            />
-          );
-        })()}
-        {/* Cell overlay only after capture — for visually confirming and
-         * tap-editing the detected stickers. During live scanning we show
-         * just the camera feed; the auto-capture fires once the cube is
-         * detected and stable, so no on-screen alignment grid is needed. */}
         {capturedBBox && (() => {
-          const left = (capturedBBox.x / capturedBBox.w) * 100 + '%';
-          const top = (capturedBBox.y / capturedBBox.h) * 100 + '%';
-          const wPct = (capturedBBox.side / capturedBBox.w) * 100 + '%';
-          // Snapshot is shown unmirrored so the user can compare to the
-          // physical cube they're holding. The cell grid (DOM cell i = data[i]
-          // = canvas position i) therefore matches without any flip.
-          const transform = 'none';
+          // Compute the actual displayed video rect inside the stage given
+          // object-fit: contain. This is robust against any mismatch between
+          // the stage's CSS aspect-ratio and the video's intrinsic aspect.
+          const sw = stageDims.w;
+          const sh = stageDims.h;
+          if (!sw || !sh) return null;
+          const cw = capturedBBox.w;
+          const ch = capturedBBox.h;
+          const stageAR = sw / sh;
+          const vidAR = cw / ch;
+          let dispW: number, dispH: number, ox: number, oy: number;
+          if (vidAR > stageAR) {
+            // Video is wider than stage → letterbox top/bottom.
+            dispW = sw;
+            dispH = sw / vidAR;
+            ox = 0;
+            oy = (sh - dispH) / 2;
+          } else {
+            // Video is taller → letterbox left/right.
+            dispH = sh;
+            dispW = sh * vidAR;
+            ox = (sw - dispW) / 2;
+            oy = 0;
+          }
+          const sidePx = (capturedBBox.side / cw) * dispW; // square in display px
+          const leftPx = ox + (capturedBBox.x / cw) * dispW;
+          const topPx = oy + (capturedBBox.y / ch) * dispH;
+          const styleBase = {
+            left: leftPx + 'px',
+            top: topPx + 'px',
+            width: sidePx + 'px',
+            height: sidePx + 'px',
+          };
           return (
-            <div
-              className={
-                'camera-scanner__grid' +
-                (lastDetected ? ' camera-scanner__grid--editable' : '')
-              }
-              style={{
-                left, top,
-                width: wPct,
-                aspectRatio: '1 / 1',
-                height: 'auto',
-                transform,
-              }}
-            >
-              {Array.from({ length: 9 }).map((_, i) => {
+            <>
+              {snapshot && (
+                <img
+                  src={snapshot}
+                  alt="Captured face snapshot"
+                  className="camera-scanner__snapshot"
+                  style={{ ...styleBase, transform: 'none' }}
+                />
+              )}
+              <div
+                className={
+                  'camera-scanner__grid' +
+                  (lastDetected ? ' camera-scanner__grid--editable' : '')
+                }
+                style={{ ...styleBase, transform: 'none' }}
+              >
+                {Array.from({ length: 9 }).map((_, i) => {
             const captured = lastDetected?.[i];
             const isCenter = i === 4;
             const editable = !!captured && !isCenter;
@@ -649,7 +670,8 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
               />
             );
           })}
-            </div>
+              </div>
+            </>
           );
         })()}
       </div>

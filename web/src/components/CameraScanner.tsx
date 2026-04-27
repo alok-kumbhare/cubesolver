@@ -259,21 +259,15 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [faceIdx, setFaceIdx] = useState(0);
   const [lastDetected, setLastDetected] = useState<Face[] | null>(null);
-  const [, setLivePreview] = useState<Face[] | null>(null);
   const [autoCapture, setAutoCapture] = useState(true);
   const [, setStability] = useState(0);
   const [justCaptured, setJustCaptured] = useState(false);
-  const [centerMismatch, setCenterMismatch] = useState<Face | null>(null);
   const [alignmentMsg, setAlignmentMsg] = useState<string | null>(null);
   const [aligned, setAligned] = useState(false);
   // True when the camera is the user-facing one (or unknown — desktop
   // webcams default to selfie-style mirroring). False for the rear/back
   // camera on phones, where the natural view should not be flipped.
   const [mirror, setMirror] = useState(true);
-  // Live bbox (canvas coords + dims) returned by the latest sampled frame.
-  // Drives the dynamic grid overlay during scanning so it tracks the cube
-  // around the frame instead of forcing the user to align with a fixed box.
-  const [, setLiveBBox] = useState<{ x: number; y: number; side: number; w: number; h: number } | null>(null);
   // Bbox at capture time, used to position the snapshot + captured-cells
   // overlay so they freeze in place.
   const [capturedBBox, setCapturedBBox] = useState<{ x: number; y: number; side: number; w: number; h: number } | null>(null);
@@ -369,12 +363,16 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
     const expected = KID_FACE_GUIDE_ORDER[faceIdxRef.current];
     // Verify the center matches: if not, reject and let the user reposition.
     if (sample.cells[4] !== expected) {
-      setCenterMismatch(sample.cells[4]);
+      const NAMES: Record<Face, string> = {
+        U: 'White', D: 'Yellow', F: 'Green', B: 'Blue', L: 'Orange', R: 'Red',
+      };
+      setAlignmentMsg(
+        `That looks like the ${NAMES[sample.cells[4]]} face — show the ${NAMES[expected]} face.`
+      );
       setStability(0);
       lastFrameRef.current = null;
       return;
     }
-    setCenterMismatch(null);
     setLastDetected(sample.cells);
     setSnapshot(sample.snapshotDataUrl);
     setCapturedBBox({
@@ -414,19 +412,6 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
       // user has time to look at it before any further state changes.
       if (justCapturedRef.current) return;
       const sample = sampleFace(video);
-      // Always show live preview.
-      setLivePreview(sample.cells.slice() as Face[]);
-      // Track the cube live so the overlay grid follows it. When detection
-      // fails we clear the bbox; the UI falls back to the fixed centered
-      // grid, prompting the user to bring the cube into view.
-      if (sample.detected) {
-        setLiveBBox({
-          x: sample.bbox.x, y: sample.bbox.y, side: sample.bbox.side,
-          w: video.videoWidth, h: video.videoHeight,
-        });
-      } else {
-        setLiveBBox(null);
-      }
 
       if (!autoCapture) return;
       const expected = KID_FACE_GUIDE_ORDER[faceIdxRef.current];
@@ -484,10 +469,8 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
 
   function nextFace() {
     setLastDetected(null);
-    setLivePreview(null);
     setStability(0);
     setJustCaptured(false);
-    setCenterMismatch(null);
     setAlignmentMsg(null);
     setAligned(false);
     setSnapshot(null);
@@ -497,10 +480,8 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
   }
   function prevFace() {
     setLastDetected(null);
-    setLivePreview(null);
     setStability(0);
     setJustCaptured(false);
-    setCenterMismatch(null);
     setAlignmentMsg(null);
     setAligned(false);
     setSnapshot(null);
@@ -512,7 +493,6 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
     setLastDetected(null);
     setStability(0);
     setJustCaptured(false);
-    setCenterMismatch(null);
     setAlignmentMsg(null);
     setAligned(false);
     setSnapshot(null);
@@ -540,13 +520,13 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
         <IsoCubeIcon front={currentFace} top={topNeighbor} size={80} />
         <div className="camera-scanner__prompt">
           Hold the cube like this picture:
-          {autoCapture && ready && !justCaptured && !centerMismatch && (
+          {autoCapture && ready && !justCaptured && (
             <div className={'camera-scanner__status' + (aligned ? ' camera-scanner__status--ok' : '')}>
               {alignmentMsg
                 ? alignmentMsg
                 : aligned
-                  ? `✓ Lined up — capturing…`
-                  : 'Aim the cube at the green square.'}
+                  ? `✓ Got it — capturing…`
+                  : 'Show your cube to the camera.'}
             </div>
           )}
           {justCaptured && (
@@ -556,20 +536,6 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           )}
         </div>
       </div>
-
-      {centerMismatch && (
-        <div className="camera-scanner__mismatch">
-          That looked like the{' '}
-          <b style={{ color: FACE_COLORS[centerMismatch] }}>
-            {COLOR_NAMES[centerMismatch]}
-          </b>{' '}
-          face, not{' '}
-          <b style={{ color: FACE_COLORS[currentFace] }}>
-            {COLOR_NAMES[currentFace]}
-          </b>
-          . Show the {COLOR_NAMES[currentFace]} side and try again.
-        </div>
-      )}
 
       <div
         ref={stageRef}

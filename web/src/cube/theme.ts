@@ -28,24 +28,6 @@ export const COLOR_EMOJI: Record<Face, string> = {
   R: '🟥',
 };
 
-export const FACE_FULL_NAMES: Record<Face, string> = {
-  U: 'Top (Up)',
-  D: 'Bottom (Down)',
-  F: 'Front',
-  B: 'Back',
-  L: 'Left',
-  R: 'Right',
-};
-
-export const KID_FACE_NAMES: Record<Face, string> = {
-  U: 'TOP',
-  D: 'BOTTOM',
-  F: 'FRONT',
-  B: 'BACK',
-  L: 'LEFT',
-  R: 'RIGHT',
-};
-
 export const PALETTE_ORDER: Face[] = ['U', 'R', 'F', 'D', 'L', 'B'];
 
 // Face guide order for kid mode (start with the face whose center is white)

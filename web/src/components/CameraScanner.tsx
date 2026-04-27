@@ -571,7 +571,6 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
           const left = (capturedBBox.x / capturedBBox.w) * 100;
           const top = (capturedBBox.y / capturedBBox.h) * 100;
           const wPct = (capturedBBox.side / capturedBBox.w) * 100;
-          const hPct = (capturedBBox.side / capturedBBox.h) * 100;
           return (
             <img
               src={snapshot}
@@ -581,7 +580,8 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
                 left: left + '%',
                 top: top + '%',
                 width: wPct + '%',
-                height: hPct + '%',
+                aspectRatio: '1 / 1',
+                height: 'auto',
                 transform: 'none',
               }}
             />
@@ -592,11 +592,9 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
          * just the camera feed; the auto-capture fires once the cube is
          * detected and stable, so no on-screen alignment grid is needed. */}
         {capturedBBox && (() => {
-          const lp = (capturedBBox.x / capturedBBox.w) * 100;
-          const left = lp + '%';
+          const left = (capturedBBox.x / capturedBBox.w) * 100 + '%';
           const top = (capturedBBox.y / capturedBBox.h) * 100 + '%';
           const wPct = (capturedBBox.side / capturedBBox.w) * 100 + '%';
-          const hPct = (capturedBBox.side / capturedBBox.h) * 100 + '%';
           // Snapshot is shown unmirrored so the user can compare to the
           // physical cube they're holding. The cell grid (DOM cell i = data[i]
           // = canvas position i) therefore matches without any flip.
@@ -608,7 +606,10 @@ export function CameraScanner({ faces, onChange, onClose }: Props) {
                 (lastDetected ? ' camera-scanner__grid--editable' : '')
               }
               style={{
-                left, top, width: wPct, height: hPct,
+                left, top,
+                width: wPct,
+                aspectRatio: '1 / 1',
+                height: 'auto',
                 transform,
               }}
             >

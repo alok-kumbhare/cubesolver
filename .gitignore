@@ -1,15 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.venv/
-venv/
-env/
-build/
-dist/
-*.spec.bak
-
 # OS / editor
 .DS_Store
 .vscode/*
@@ -18,5 +6,6 @@ dist/
 *.swp
 Thumbs.db
 
-# Node (web subproject also has its own .gitignore)
+# Node (web/ also has its own .gitignore)
 node_modules/
+dist/

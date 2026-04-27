@@ -30,8 +30,10 @@ interface Classified {
 
 function classify(r: number, g: number, b: number): Classified {
   const [h, s, v] = rgbToHsv(r, g, b);
-  // Whites: low saturation, decent brightness. Looser for indoor lighting.
-  if (s < 0.32 && v > 0.45) return { face: 'U', confident: true };
+  // Whites: very low saturation and bright. Tighter thresholds so a
+  // glare-washed colored sticker (which still keeps a small color cast)
+  // doesn't get misread as white.
+  if (s < 0.18 && v > 0.55) return { face: 'U', confident: true };
   // Yellows: hue 35-72, moderate sat.
   if (h >= 35 && h <= 72 && s > 0.25) return { face: 'D', confident: true };
   // Oranges: hue 5-35.
@@ -62,9 +64,28 @@ function sampleAt(ctx: CanvasRenderingContext2D, cx: number, cy: number, half: n
     Math.round(cx) - half, Math.round(cy) - half,
     half * 2, half * 2,
   ).data;
+  // Glare on a colored sticker creates a bright, near-white specular spot
+  // that pulls the channel-mean toward white and makes the sticker look
+  // like the W (Up) face. Strategy: drop pixels that look like specular
+  // highlights (very bright AND very low saturation) before averaging.
+  // If filtering would leave too few pixels (e.g. the sticker really is
+  // white), fall back to the unfiltered mean.
   let R = 0, G = 0, B = 0, n = 0;
+  let RAll = 0, GAll = 0, BAll = 0, nAll = 0;
   for (let i = 0; i < data.length; i += 4) {
-    R += data[i]; G += data[i + 1]; B += data[i + 2]; n++;
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    RAll += r; GAll += g; BAll += b; nAll++;
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    const v = mx / 255;
+    const s = mx === 0 ? 0 : (mx - mn) / mx;
+    // Skip blown-out specular pixels.
+    if (v > 0.93 && s < 0.18) continue;
+    R += r; G += g; B += b; n++;
+  }
+  if (n < nAll * 0.25) {
+    // Too few non-glare pixels — sticker is probably actually white.
+    return classify(RAll / nAll, GAll / nAll, BAll / nAll);
   }
   return classify(R / n, G / n, B / n);
 }

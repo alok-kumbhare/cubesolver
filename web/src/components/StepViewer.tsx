@@ -4,6 +4,8 @@ import { COLOR_EMOJI, FACE_COLORS } from '../cube/theme';
 interface Props {
   steps: SolveStep[];
   currentIndex: number; // 0..N; the index we're "at" — N means solved.
+  started: boolean; // false until the user presses Start
+  onStart: () => void;
   onIndexChange: (i: number) => void;
   onReplay: () => void;
   ttsEnabled: boolean;
@@ -11,7 +13,7 @@ interface Props {
 }
 
 export function StepViewer({
-  steps, currentIndex, onIndexChange, onReplay,
+  steps, currentIndex, started, onStart, onIndexChange, onReplay,
   ttsEnabled, onToggleTTS,
 }: Props) {
   const total = steps.length;
@@ -20,7 +22,7 @@ export function StepViewer({
   // currentIndex is the position in the solve where the user is standing,
   // and the demo loops the step at that index until they press Next.
   const currentStep =
-    total > 0 && currentIndex < total ? steps[currentIndex] : null;
+    started && total > 0 && currentIndex < total ? steps[currentIndex] : null;
 
   const stars = total > 0
     ? '⭐'.repeat(currentIndex) + '☆'.repeat(total - currentIndex)
@@ -31,9 +33,11 @@ export function StepViewer({
       <div className="step-viewer__header">
         <span className="step-viewer__counter">
           {total > 0
-            ? (currentIndex < total
-                ? `Move ${currentIndex + 1} of ${total}`
-                : `All ${total} moves done!`)
+            ? (!started
+                ? `Ready! ${total} moves to solve`
+                : currentIndex < total
+                  ? `Move ${currentIndex + 1} of ${total}`
+                  : `All ${total} moves done!`)
             : 'Press Solve!'}
         </span>
         <div className="step-viewer__toggles">
@@ -63,9 +67,11 @@ export function StepViewer({
         </div>
       ) : (
         <div className="step-viewer__instruction step-viewer__instruction--idle">
-          {total > 0 && currentIndex >= total
-            ? '🎉 You did it! Cube solved! 🎉'
-            : 'Paint your cube and press Solve! 🎨'}
+          {total > 0 && !started
+            ? '👀 Look at your cube. Press Start when you are ready!'
+            : total > 0 && currentIndex >= total
+              ? '🎉 You did it! Cube solved! 🎉'
+              : 'Paint your cube and press Solve! 🎨'}
         </div>
       )}
 
@@ -77,30 +83,33 @@ export function StepViewer({
         <button
           type="button"
           onClick={() => onIndexChange(0)}
-          disabled={currentIndex === 0 || total === 0}
+          disabled={!started || currentIndex === 0 || total === 0}
         >⏮ First</button>
         <button
           type="button"
           onClick={() => onIndexChange(Math.max(0, currentIndex - 1))}
-          disabled={currentIndex === 0 || total === 0}
+          disabled={!started || currentIndex === 0 || total === 0}
         >◀ Back</button>
         <button
           type="button"
           className="step-viewer__replay"
           onClick={onReplay}
-          disabled={currentIndex >= total || total === 0}
+          disabled={!started || currentIndex >= total || total === 0}
           title="Play this move again"
         >🔁 Replay</button>
         <button
           type="button"
           className="step-viewer__play"
-          onClick={() => onIndexChange(Math.min(total, currentIndex + 1))}
-          disabled={currentIndex >= total || total === 0}
-        >Next ▶</button>
+          onClick={() => {
+            if (!started) { onStart(); return; }
+            onIndexChange(Math.min(total, currentIndex + 1));
+          }}
+          disabled={total === 0 || (started && currentIndex >= total)}
+        >{!started ? 'Start ▶' : 'Next ▶'}</button>
         <button
           type="button"
           onClick={() => onIndexChange(total)}
-          disabled={currentIndex >= total || total === 0}
+          disabled={!started || currentIndex >= total || total === 0}
         >Last ⏭</button>
       </div>
 

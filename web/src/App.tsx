@@ -16,6 +16,10 @@ export default function App() {
   const [steps, setSteps] = useState<SolveStep[]>([]);
   const [states, setStates] = useState<Faces[]>([]);
   const [stepIdx, setStepIdx] = useState(0);
+  // True once the user has pressed "Start" on the solution screen. Until
+  // then, no move is shown (so the cube stays in the captured state and
+  // the kid sees what they're holding before the first move starts).
+  const [started, setStarted] = useState(false);
   const [status, setStatus] = useState<string>('');
   const [statusKind, setStatusKind] = useState<'info' | 'ok' | 'err'>('info');
   const [solving, setSolving] = useState(false);
@@ -34,8 +38,8 @@ export default function App() {
 
   useEffect(() => {
     if (!ttsEnabled || steps.length === 0) return;
-    if (stepIdx === 0) {
-      tts.speak("Here is your cube. Press next to start.");
+    if (!started) {
+      tts.speak("Here is your cube. Press start to begin.");
       return;
     }
     if (stepIdx >= steps.length) {
@@ -44,7 +48,7 @@ export default function App() {
     }
     const s = steps[stepIdx];
     tts.speak(s.kidDescription);
-  }, [stepIdx, steps, ttsEnabled]); // eslint-disable-line
+  }, [stepIdx, steps, ttsEnabled, started]); // eslint-disable-line
 
   function setStatusMsg(msg: string, kind: 'info' | 'ok' | 'err' = 'info') {
     setStatus(msg);
@@ -56,6 +60,7 @@ export default function App() {
     setSteps([]);
     setStates([]);
     setStepIdx(0);
+    setStarted(false);
     tts.cancel();
     setStatusMsg('', 'info');
     setScanning(true);
@@ -69,6 +74,7 @@ export default function App() {
       setSteps(res.steps);
       setStates(res.states);
       setStepIdx(0);
+      setStarted(false);
       if (res.rotated) setFaces(res.normalizedFaces);
       if (res.steps.length === 0) {
         setStatusMsg('Already solved! 🎉', 'ok');
@@ -98,7 +104,10 @@ export default function App() {
   const liveFaces =
     states.length > 0 ? states[Math.min(stepIdx, states.length - 1)] : faces;
 
-  const demoStep = stepIdx < steps.length ? steps[stepIdx] : null;
+  // Hide the upcoming move (no demo, no description) until the user
+  // explicitly presses Start, so the first thing they see is their cube
+  // exactly as they captured it.
+  const demoStep = started && stepIdx < steps.length ? steps[stepIdx] : null;
   const animation = demoStep
     ? {
         preFaces: states[stepIdx],
@@ -177,7 +186,9 @@ export default function App() {
             <StepViewer
               steps={steps}
               currentIndex={stepIdx}
-              onIndexChange={handleStepIndex}
+              started={started}
+              onStart={() => setStarted(true)}
+              onIndexChange={(i) => { setStarted(true); handleStepIndex(i); }}
               onReplay={handleReplay}
               ttsEnabled={ttsEnabled}
               onToggleTTS={() => setTTSEnabled((v) => !v)}

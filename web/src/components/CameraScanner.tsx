@@ -152,14 +152,62 @@ function detectCubeBBox(
   for (let i = 0; i < SH; i++) if (rowCount[i] >= rowThr) { if (ymin < 0) ymin = i; ymax = i; }
   if (xmin < 0 || ymin < 0) return null;
 
-  const bx = xmin * stride;
-  const by = ymin * stride;
-  const bw = (xmax - xmin + 1) * stride;
-  const bh = (ymax - ymin + 1) * stride;
+  let bx = xmin * stride;
+  let by = ymin * stride;
+  let bw = (xmax - xmin + 1) * stride;
+  let bh = (ymax - ymin + 1) * stride;
+
+  // ---- Refinement pass --------------------------------------------------
+  // Re-project at full resolution inside a slightly-padded ROI around the
+  // initial bbox, with a higher density threshold. This trims background
+  // that the coarse first pass included (e.g. colorful objects near the
+  // cube, or wide framing) so per-cell sampling hits sticker centers
+  // instead of drifting into the background.
+  const pad = Math.round(Math.max(bw, bh) * 0.10);
+  const rx0 = Math.max(0, bx - pad);
+  const ry0 = Math.max(0, by - pad);
+  const rx1 = Math.min(w, bx + bw + pad);
+  const ry1 = Math.min(h, by + bh + pad);
+  const rw = rx1 - rx0;
+  const rh = ry1 - ry0;
+  const rstride = Math.max(1, Math.floor(Math.min(rw, rh) / 200));
+  const RSW = Math.floor(rw / rstride);
+  const RSH = Math.floor(rh / rstride);
+  const rCol = new Int32Array(RSW);
+  const rRow = new Int32Array(RSH);
+  for (let yy = 0; yy < RSH; yy++) {
+    const py = ry0 + yy * rstride;
+    for (let xx = 0; xx < RSW; xx++) {
+      const px = rx0 + xx * rstride;
+      const i = (py * w + px) * 4;
+      const cls = classify(data[i], data[i + 1], data[i + 2]);
+      if (cls.confident) {
+        rCol[xx]++;
+        rRow[yy]++;
+      }
+    }
+  }
+  let rColMax = 0; for (let i = 0; i < RSW; i++) if (rCol[i] > rColMax) rColMax = rCol[i];
+  let rRowMax = 0; for (let i = 0; i < RSH; i++) if (rRow[i] > rRowMax) rRowMax = rRow[i];
+  // Tighter threshold (50%) finds the steep falloff at the actual cube edge.
+  const rColThr = Math.max(2, rColMax * 0.5);
+  const rRowThr = Math.max(2, rRowMax * 0.5);
+  let rxmin = -1, rxmax = -1, rymin = -1, rymax = -1;
+  for (let i = 0; i < RSW; i++) if (rCol[i] >= rColThr) { if (rxmin < 0) rxmin = i; rxmax = i; }
+  for (let i = 0; i < RSH; i++) if (rRow[i] >= rRowThr) { if (rymin < 0) rymin = i; rymax = i; }
+  if (rxmin >= 0 && rymin >= 0) {
+    bx = rx0 + rxmin * rstride;
+    by = ry0 + rymin * rstride;
+    bw = (rxmax - rxmin + 1) * rstride;
+    bh = (rymax - rymin + 1) * rstride;
+  }
+
   const cx = bx + bw / 2;
   const cy = by + bh / 2;
-  // 5% margin so the outermost stickers aren't clipped by a tight bbox.
-  let side = Math.max(bw, bh) * 1.05;
+  // Use the smaller of the two extents as the side, then add a small 3%
+  // safety margin. Using max here would extend the bbox into background
+  // along the shorter axis when perspective tilt squashes the cube.
+  let side = Math.min(bw, bh) * 1.03;
   side = Math.min(side, w, h);
   if (side < Math.min(w, h) * 0.10) return null;
   const fx = Math.round(Math.max(0, Math.min(w - side, cx - side / 2)));

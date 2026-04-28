@@ -25,7 +25,7 @@ const DIR_NAMES: Record<Direction, string> = {
 };
 
 const KID_DIR: Record<Direction, string> = {
-  cw: 'this way ↻', ccw: 'the other way ↺', '180': 'TWICE 🔄',
+  cw: 'clockwise ↻', ccw: 'counter-clockwise ↺', '180': 'TWICE 🔄',
 };
 
 export function parseMove(notation: string): { face: Face; direction: Direction } {

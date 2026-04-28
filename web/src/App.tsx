@@ -11,22 +11,51 @@ import './styles/theme.css';
 
 const MOVE_DURATION_MS = 650;
 
+const PERSIST_KEY = 'cubesolver:v1';
+const PERSIST_VERSION = 1;
+
+interface PersistedState {
+  v: number;
+  faces: Faces;
+  steps: SolveStep[];
+  states: Faces[];
+  stepIdx: number;
+  started: boolean;
+  ttsEnabled: boolean;
+  scanning: boolean;
+}
+
+function loadPersisted(): PersistedState | null {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as PersistedState;
+    if (!data || data.v !== PERSIST_VERSION) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+const persisted = typeof window !== 'undefined' ? loadPersisted() : null;
+
 export default function App() {
-  const [faces, setFaces] = useState<Faces>(createSolved);
-  const [steps, setSteps] = useState<SolveStep[]>([]);
-  const [states, setStates] = useState<Faces[]>([]);
-  const [stepIdx, setStepIdx] = useState(0);
+  const [faces, setFaces] = useState<Faces>(() => persisted?.faces ?? createSolved());
+  const [steps, setSteps] = useState<SolveStep[]>(() => persisted?.steps ?? []);
+  const [states, setStates] = useState<Faces[]>(() => persisted?.states ?? []);
+  const [stepIdx, setStepIdx] = useState(() => persisted?.stepIdx ?? 0);
   // True once the user has pressed "Start" on the solution screen. Until
   // then, no move is shown (so the cube stays in the captured state and
   // the kid sees what they're holding before the first move starts).
-  const [started, setStarted] = useState(false);
+  const [started, setStarted] = useState(() => persisted?.started ?? false);
   const [status, setStatus] = useState<string>('');
   const [statusKind, setStatusKind] = useState<'info' | 'ok' | 'err'>('info');
   const [solving, setSolving] = useState(false);
-  const [ttsEnabled, setTTSEnabled] = useState(true);
+  const [ttsEnabled, setTTSEnabled] = useState(() => persisted?.ttsEnabled ?? true);
   // Camera is the only way to enter the cube — open it by default and
-  // re-open on Reset / Scan again.
-  const [scanning, setScanning] = useState(true);
+  // re-open on Reset / Scan again. If we restored a previous session with
+  // a captured cube or a solution in progress, skip the camera and resume.
+  const [scanning, setScanning] = useState(() => persisted?.scanning ?? true);
   const [solverReadyTick, setSolverReadyTick] = useState(0);
   const [replayTick, setReplayTick] = useState(0);
 
@@ -35,6 +64,24 @@ export default function App() {
   useEffect(() => {
     initSolver().then(() => setSolverReadyTick((t) => t + 1));
   }, []);
+
+  useEffect(() => {
+    try {
+      const data: PersistedState = {
+        v: PERSIST_VERSION,
+        faces,
+        steps,
+        states,
+        stepIdx,
+        started,
+        ttsEnabled,
+        scanning,
+      };
+      localStorage.setItem(PERSIST_KEY, JSON.stringify(data));
+    } catch {
+      // ignore quota / unavailable storage
+    }
+  }, [faces, steps, states, stepIdx, started, ttsEnabled, scanning]);
 
   useEffect(() => {
     if (!ttsEnabled || steps.length === 0) return;
@@ -64,6 +111,7 @@ export default function App() {
     tts.cancel();
     setStatusMsg('', 'info');
     setScanning(true);
+    try { localStorage.removeItem(PERSIST_KEY); } catch { /* ignore */ }
   }
 
   async function handleSolve() {
